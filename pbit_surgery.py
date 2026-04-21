@@ -129,7 +129,7 @@ PARAMETERS = [
         "name": "BaseCsvUrl",
         "kind": "m",
         "expression": [
-            "\"https://raw.githubusercontent.com/justmg/dot-faadc-dashboard/main/dot_faadc/dot_faadc.csv.gz\""
+            "\"https://github.com/justmg/dot-faadc-dashboard/releases/download/snapshot/dot_faadc.csv.gz\""
             " meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
         ],
         "annotations": [{"name": "PBI_ResultType", "value": "Text"}],
