@@ -228,16 +228,12 @@ FAADC_DATA_POOL_M: list[str] = [
     "        type text),",
     "    WithLbn = Table.AddColumn(WithFYFainAmend, \"LBN-Consolidated\",",
     "        each [Legal Business Name], type text),",
-    "    WithCD   = Table.AddColumn(WithLbn,  \"Principal Place Of Performance Congressional District\", each null, type text),",
-    "    WithRD1  = Table.AddColumn(WithCD,   \"R&D Indicator\",  each null, type text),",
-    "    WithRD2  = Table.AddColumn(WithRD1,  \"R&D Type\",       each null, type text),",
-    "    WithAB   = Table.AddColumn(WithRD2,  \"Approved By\",    each null, type text),",
-    "    WithLMB  = Table.AddColumn(WithAB,   \"Last Modified By\", each null, type text),",
-    "    WithCS   = Table.AddColumn(WithLMB,  \"Closed Status\",  each null, type text),",
-    "    WithNR   = Table.AddColumn(WithCS,   \"Number of Records\", each null, Int64.Type),",
-    "    WithIC   = Table.AddColumn(WithNR,   \"Indirect Cost Dollars\", each null, Currency.Type)",
+    "    // Congressional District: FABS PrimeAwardSummaries omits it. Keep the",
+    "    // column as null so any slicers referencing it still compile.",
+    "    WithCD = Table.AddColumn(WithLbn, \"Principal Place Of Performance Congressional District\",",
+    "        each null, type text)",
     "in",
-    "    WithIC",
+    "    WithCD",
 ]
 
 
@@ -255,7 +251,10 @@ FAADC_FY20_PLUS_DUPS_M = [
 FAADC_FY20_PLUS_M = [
     "let",
     "    Source = #\"FAADC FY20+ Dups\",",
-    "    #\"Removed Duplicates\" = Table.Distinct(Source, {\"FY_FAIN_Amend\"})",
+    "    // Dedup on FAIN_Amend — with PrimeAwardSummaries, modification_number is",
+    "    // blank so FAIN_Amend collapses to FAIN_ and can collide across fiscal years",
+    "    // (the one-side relationship on this column then rejects the load).",
+    "    #\"Removed Duplicates\" = Table.Distinct(Source, {\"FAIN_Amend\"})",
     "in",
     "    #\"Removed Duplicates\"",
 ]
@@ -276,10 +275,129 @@ MAP_FAIN_TO_ALN_M = [
 # --------------------------------------------------------------------------
 # Remove helper expressions that exist only to power the now-stubbed SharePoint tables.
 # --------------------------------------------------------------------------
-# Keep ALL original expressions. Removing Parameter1/Parameter2 makes PBI Desktop
-# reject the .pbit because UnappliedChanges and Report/Layout still reference them.
-# The helpers are dead weight after stubbing; just leave them.
-EXPRESSIONS_TO_REMOVE: set[str] = set()
+# With UnappliedChanges stripped from the .pbit, these helpers can be removed
+# safely — nothing references them anymore.
+EXPRESSIONS_TO_REMOVE = {
+    "Parameter1", "Sample File", "Transform Sample File", "Transform File",
+    "Parameter2", "Sample File (2)", "Transform Sample File (2)", "Transform File (2)",
+}
+
+# --------------------------------------------------------------------------
+# Phase 2: bake the MCP-driven cleanup in so a fresh regenerate lands clean.
+# --------------------------------------------------------------------------
+
+# Drop these tables entirely (no empty-stub partition, just gone from the model).
+# Visuals that referenced them will need manual cleanup on the report canvas.
+TABLES_TO_DROP = {
+    "Acronyms", "AL POCs", "Data Dict & Criteria", "OMB 1-PRO/AL",
+    "Events & Tasks", "Annual Update", "EDA", "Consolidated Business Names 3",
+}
+
+# Columns removed from FAADC Data Pool: DoD-workflow fields (always null for
+# public data), R&D fields (DOT has ~none), composites that depend on them,
+# and leftover USAspending columns the new M does not rename.
+FAADC_COLUMNS_TO_DROP = {
+    # DoD-workflow — not in public data
+    "Approved By", "Last Modified By", "Closed Status", "Number of Records",
+    "Indirect Cost Dollars",
+    # R&D — DOT has ~none
+    "R&D Indicator", "R&D Type",
+    # Calculated composites whose base columns are gone
+    "Closed Status (groups)", "R&D Type (groups)", "Higher Learning",
+    # USAspending leftovers not part of the FAADC contract
+    "assistance_type_code", "transaction_description", "total_obligated_amount",
+    "awarding_agency_name", "awarding_sub_agency_name",
+}
+
+# Measures to remove — these reference dropped tables or columns
+MEASURES_TO_DROP = {"CountInFAADCNotInEDA", "InFAADC"}
+
+# New calculated column: map Funding Sub-Tier Agency -> short DOT mode abbrev
+DOT_MODE_COLUMN = {
+    "name": "DOT Mode",
+    "dataType": "string",
+    "isDataTypeInferred": True,
+    "type": "calculated",
+    "expression": [
+        "SWITCH( TRUE(),",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Highway Admin\"),           \"FHWA\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Transit Admin\"),           \"FTA\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Aviation Admin\"),          \"FAA\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Railroad Admin\"),          \"FRA\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Motor Carrier\"),           \"FMCSA\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Maritime Admin\"),          \"MARAD\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Highway Traffic Safety\"),  \"NHTSA\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Pipeline and Hazardous\"),  \"PHMSA\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Saint Lawrence\"),          \"SLSDC\",",
+        "    CONTAINSSTRING('FAADC Data Pool'[Funding Sub-Tier Agency], \"Secretary of Transportation\"), \"OST\",",
+        "    \"Other\"",
+        ")",
+    ],
+    "lineageTag": "d07m0de0-0000-4000-8000-000000000001",
+    "summarizeBy": "none",
+    "annotations": [{"name": "SummarizationSetBy", "value": "Automatic"}],
+}
+
+
+def drop_tables_and_cascade(model: dict, drop: set[str]) -> None:
+    """Remove tables from model.tables, plus orphaned LocalDateTable_* that
+    were wired to their date columns, plus any relationship that touches a
+    dropped table, plus any annotation reference."""
+    tables = model["tables"]
+
+    # Find LocalDateTables reachable only from dropped tables via relationships.
+    ldts_to_drop: set[str] = set()
+    for r in model.get("relationships", []):
+        if r.get("fromTable") in drop and str(r.get("toTable", "")).startswith("LocalDateTable_"):
+            ldts_to_drop.add(r["toTable"])
+    drop = drop | ldts_to_drop
+
+    model["tables"] = [t for t in tables if t.get("name") not in drop]
+
+    # Prune relationships touching dropped tables
+    model["relationships"] = [
+        r for r in model.get("relationships", [])
+        if r.get("fromTable") not in drop and r.get("toTable") not in drop
+    ]
+
+    # Trim the PBI_QueryOrder annotation so dropped tables do not reappear
+    for ann in model.get("annotations", []):
+        if ann.get("name") == "PBI_QueryOrder":
+            try:
+                order = json.loads(ann["value"])
+                ann["value"] = json.dumps([n for n in order if n not in drop])
+            except (KeyError, json.JSONDecodeError):
+                pass
+
+
+def drop_columns_from_table(model: dict, table_name: str, columns_to_drop: set[str]) -> None:
+    tbl = next((t for t in model["tables"] if t.get("name") == table_name), None)
+    if not tbl:
+        return
+    tbl["columns"] = [c for c in tbl.get("columns", []) if c.get("name") not in columns_to_drop]
+    # Prune relationships that reference any dropped column on this table
+    model["relationships"] = [
+        r for r in model.get("relationships", [])
+        if not (
+            (r.get("fromTable") == table_name and r.get("fromColumn") in columns_to_drop)
+            or (r.get("toTable") == table_name and r.get("toColumn") in columns_to_drop)
+        )
+    ]
+
+
+def drop_measures(model: dict, measure_names: set[str]) -> None:
+    for tbl in model["tables"]:
+        if "measures" in tbl:
+            tbl["measures"] = [m for m in tbl["measures"] if m.get("name") not in measure_names]
+
+
+def add_calculated_column(model: dict, table_name: str, column: dict) -> None:
+    tbl = next((t for t in model["tables"] if t.get("name") == table_name), None)
+    if not tbl:
+        return
+    if any(c.get("name") == column["name"] for c in tbl.get("columns", [])):
+        return  # idempotent
+    tbl.setdefault("columns", []).append(column)
 
 
 def rewrite_partition(partition: dict, new_expression: list[str]) -> None:
@@ -289,9 +407,9 @@ def rewrite_partition(partition: dict, new_expression: list[str]) -> None:
 
 def transform_model(model_json: dict) -> None:
     model = model_json["model"]
-    tables = model["tables"]
 
-    for tbl in tables:
+    # 1. Rewrite partition M for the FAADC family
+    for tbl in model["tables"]:
         name = tbl.get("name", "")
         parts = tbl.get("partitions")
         if not parts:
@@ -305,19 +423,27 @@ def transform_model(model_json: dict) -> None:
             rewrite_partition(parts[0], FAADC_FY20_PLUS_M)
         elif name == "Map-Table_FAIN-to-ALN":
             rewrite_partition(parts[0], MAP_FAIN_TO_ALN_M)
-        elif name in STUB_SCHEMAS:
-            rewrite_partition(parts[0], empty_table_expression(STUB_SCHEMAS[name]))
 
-    # Clean obsolete helper expressions, add parameters
+    # 2. Drop the 8 DoD/SharePoint-sourced tables outright (plus their LDTs, relationships)
+    drop_tables_and_cascade(model, TABLES_TO_DROP)
+
+    # 3. Prune dead columns from FAADC Data Pool (DoD-workflow, R&D, leftover USAspending)
+    drop_columns_from_table(model, "FAADC Data Pool", FAADC_COLUMNS_TO_DROP)
+
+    # 4. Remove measures that referenced dropped tables/columns
+    drop_measures(model, MEASURES_TO_DROP)
+
+    # 5. Add the DOT Mode calculated column
+    add_calculated_column(model, "FAADC Data Pool", DOT_MODE_COLUMN)
+
+    # 6. Clean obsolete helper expressions, add parameters
     exprs = model.get("expressions", [])
     exprs = [e for e in exprs if e.get("name") not in EXPRESSIONS_TO_REMOVE]
-    # Prepend parameters so they appear at top of the list
     existing_names = {e["name"] for e in exprs}
     new_params = [p for p in PARAMETERS if p["name"] not in existing_names]
     model["expressions"] = new_params + exprs
 
-    # Prepend my 4 parameters to the existing QueryOrder; leave everything else alone
-    # (including the dead Parameter1/Parameter2 and their helpers).
+    # 7. QueryOrder: parameters first, drop tables we removed
     param_prefix = ["BaseCsvUrl", "AgencyName", "FYStart", "OverlapDays"]
     for ann in model.get("annotations", []):
         if ann.get("name") == "PBI_QueryOrder":
@@ -325,7 +451,10 @@ def transform_model(model_json: dict) -> None:
                 existing = json.loads(ann.get("value") or "[]")
             except json.JSONDecodeError:
                 existing = []
-            merged = param_prefix + [n for n in existing if n not in param_prefix]
+            merged = param_prefix + [
+                n for n in existing
+                if n not in param_prefix and n not in TABLES_TO_DROP
+            ]
             ann["value"] = json.dumps(merged)
 
 
@@ -346,6 +475,12 @@ def clean_connections(path: Path) -> None:
     path.write_bytes(json.dumps(data).encode("utf-8"))
 
 
+# UnappliedChanges is a Power Query "pending edits" file that OVERRIDES
+# DataModelSchema on load. It holds the original DoD dataflow M queries, so we
+# strip it entirely and let DataModelSchema be authoritative.
+SKIP_FILES = {"UnappliedChanges"}
+
+
 def repackage(src_pbit: Path, extracted_dir: Path, out_pbit: Path) -> None:
     # Preserve original ordering/compression — open the source zip as a template.
     with zipfile.ZipFile(src_pbit, "r") as src_zf:
@@ -354,6 +489,8 @@ def repackage(src_pbit: Path, extracted_dir: Path, out_pbit: Path) -> None:
         out_pbit.unlink()
     with zipfile.ZipFile(out_pbit, "w", zipfile.ZIP_DEFLATED) as out_zf:
         for name in names:
+            if name in SKIP_FILES:
+                continue
             src_path = extracted_dir / name
             if not src_path.exists():
                 # Fall back to the original (e.g. for unchanged binary files)
