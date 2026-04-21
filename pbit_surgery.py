@@ -129,7 +129,7 @@ PARAMETERS = [
         "name": "BaseCsvUrl",
         "kind": "m",
         "expression": [
-            "\"https://raw.githubusercontent.com/justmg/dot-faadc-dashboard/main/dot_faadc/dot_faadc.csv\""
+            "\"https://raw.githubusercontent.com/justmg/dot-faadc-dashboard/main/dot_faadc/dot_faadc.csv.gz\""
             " meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
         ],
         "annotations": [{"name": "PBI_ResultType", "value": "Text"}],
@@ -174,7 +174,7 @@ FAADC_DATA_POOL_M: list[str] = [
     "    // BASE LAYER: CSV snapshot (GitHub raw URL, refreshed monthly)",
     "    // ============================================================",
     "    BaseCsvRaw = try Csv.Document(",
-    "        Web.Contents(BaseCsvUrl),",
+    "        Binary.Decompress(Web.Contents(BaseCsvUrl), Compression.GZip),",
     "        [Delimiter=\",\", Columns=null, Encoding=65001, QuoteStyle=QuoteStyle.Csv]",
     "    ) otherwise null,",
     "",

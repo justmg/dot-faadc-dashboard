@@ -1,6 +1,8 @@
 extracted/
 dot_faadc/_parts/
 dot_faadc/bulk_download.log
+dot_faadc/*.csv
+!dot_faadc/*.csv.gz
 250415 Assistance Listing Shell.pbit
 claude.md
 __pycache__/

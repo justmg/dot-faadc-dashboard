@@ -32,15 +32,16 @@ jobs:
         working-directory: dot_faadc
         run: |
           python bulk_download.py \
-            --output dot_faadc.csv \
+            --output dot_faadc.csv.gz \
             --fy-start "${{ github.event.inputs.fy_start || '2020' }}" \
             --fy-end   "${{ github.event.inputs.fy_end   || '2026' }}"
+          ls -lh dot_faadc.csv.gz
 
       - name: Commit updated CSV
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dot_faadc/dot_faadc.csv
+          git add dot_faadc/dot_faadc.csv.gz
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
