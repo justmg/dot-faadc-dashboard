@@ -132,6 +132,7 @@ PARAMETERS = [
             "\"https://github.com/justmg/dot-faadc-dashboard/releases/download/snapshot/dot_faadc.csv.gz\""
             " meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
         ],
+        "lineageTag": "a1b2c3d4-e5f6-7890-1234-56789abcdef0",
         "annotations": [{"name": "PBI_ResultType", "value": "Text"}],
     },
     {
@@ -141,6 +142,7 @@ PARAMETERS = [
             "\"Department of Transportation\""
             " meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
         ],
+        "lineageTag": "b2c3d4e5-f6a7-8901-2345-6789abcdef01",
         "annotations": [{"name": "PBI_ResultType", "value": "Text"}],
     },
     {
@@ -149,6 +151,7 @@ PARAMETERS = [
         "expression": [
             "2020 meta [IsParameterQuery=true, Type=\"Number\", IsParameterQueryRequired=true]"
         ],
+        "lineageTag": "c3d4e5f6-a7b8-9012-3456-789abcdef012",
         "annotations": [{"name": "PBI_ResultType", "value": "Number"}],
     },
     {
@@ -157,6 +160,7 @@ PARAMETERS = [
         "expression": [
             "30 meta [IsParameterQuery=true, Type=\"Number\", IsParameterQueryRequired=true]"
         ],
+        "lineageTag": "d4e5f6a7-b8c9-0123-4567-89abcdef0123",
         "annotations": [{"name": "PBI_ResultType", "value": "Number"}],
     },
 ]
@@ -272,10 +276,10 @@ MAP_FAIN_TO_ALN_M = [
 # --------------------------------------------------------------------------
 # Remove helper expressions that exist only to power the now-stubbed SharePoint tables.
 # --------------------------------------------------------------------------
-EXPRESSIONS_TO_REMOVE = {
-    "Parameter1", "Sample File", "Transform Sample File", "Transform File",
-    "Parameter2", "Sample File (2)", "Transform Sample File (2)", "Transform File (2)",
-}
+# Keep ALL original expressions. Removing Parameter1/Parameter2 makes PBI Desktop
+# reject the .pbit because UnappliedChanges and Report/Layout still reference them.
+# The helpers are dead weight after stubbing; just leave them.
+EXPRESSIONS_TO_REMOVE: set[str] = set()
 
 
 def rewrite_partition(partition: dict, new_expression: list[str]) -> None:
@@ -312,18 +316,17 @@ def transform_model(model_json: dict) -> None:
     new_params = [p for p in PARAMETERS if p["name"] not in existing_names]
     model["expressions"] = new_params + exprs
 
-    # Update PBI_QueryOrder annotation to drop removed helpers and surface parameters first
-    keep_order = [
-        "BaseCsvUrl", "AgencyName", "FYStart", "OverlapDays",
-        "FAADC Data Pool", "FAADC FY20+ Dups", "FAADC FY20+",
-        "EDA", "Acronyms", "AL POCs", "Data Dict & Criteria", "OMB 1-PRO/AL",
-        "Time of Refresh", "Events & Tasks", "FABS BUS TYPE DES",
-        "Unique Legal Business Name", "Map-Table_FAIN-to-ALN", "Annual Update",
-        "Consolidated Business Names 3",
-    ]
+    # Prepend my 4 parameters to the existing QueryOrder; leave everything else alone
+    # (including the dead Parameter1/Parameter2 and their helpers).
+    param_prefix = ["BaseCsvUrl", "AgencyName", "FYStart", "OverlapDays"]
     for ann in model.get("annotations", []):
         if ann.get("name") == "PBI_QueryOrder":
-            ann["value"] = json.dumps(keep_order)
+            try:
+                existing = json.loads(ann.get("value") or "[]")
+            except json.JSONDecodeError:
+                existing = []
+            merged = param_prefix + [n for n in existing if n not in param_prefix]
+            ann["value"] = json.dumps(merged)
 
 
 def load_utf16le_json(path: Path) -> dict:
