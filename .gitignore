@@ -1,0 +1,7 @@
+extracted/
+dot_faadc/_parts/
+dot_faadc/bulk_download.log
+250415 Assistance Listing Shell.pbit
+claude.md
+__pycache__/
+*.pyc
